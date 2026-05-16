@@ -7,7 +7,7 @@ import re
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-OUTPUT_FOLDER = "/app/documents"
+OUTPUT_FOLDER = "/tmp/documents"
 EXPECTED_DOCS = ["Договор", "Счет", "Акт"]
 
 # ⚠️ ВСТАВЬТЕ НОВЫЙ ТОКЕН ОТ BOTFATHER

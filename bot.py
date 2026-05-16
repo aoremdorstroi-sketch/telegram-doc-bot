@@ -1,11 +1,6 @@
 import os
-import shutil
-import zipfile
-from pathlib import Path
-from datetime import datetime
-import re
 from telegram import Update
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters
 
 OUTPUT_FOLDER = "/tmp/documents"
 EXPECTED_DOCS = ["Договор", "Счет", "Акт"]
@@ -13,30 +8,35 @@ EXPECTED_DOCS = ["Договор", "Счет", "Акт"]
 # ⚠️ ВСТАВЬТЕ НОВЫЙ ТОКЕН ОТ BOTFATHER
 TELEGRAM_TOKEN = "8836273052:AAESZbsUlOxbyIes_SKBIbVhjEg0yBANjLY"
 
-Path(OUTPUT_FOLDER).mkdir(parents=True, exist_ok=True)
+if not os.path.exists(OUTPUT_FOLDER):
+    os.makedirs(OUTPUT_FOLDER)
 
 def get_contractor_from_filename(filename):
-    name = Path(filename).stem
-    match = re.search(r'\((.*?)\)', name)
-    if match:
-        return match.group(1).strip()
+    name = filename
+    if "(" in name and ")" in name:
+        start = name.find("(")
+        end = name.find(")")
+        return name[start+1:end]
+    
     for doc in EXPECTED_DOCS:
         if doc in name:
             rest = name.replace(doc, "").strip()
-            rest = re.split(r'\d{2}[\.\-]\d{2}', rest)[0].strip()
+            for i, char in enumerate(rest):
+                if char.isdigit() and i > 0 and rest[i-1] in ".-":
+                    rest = rest[:i-1]
+                    break
             if rest and len(rest) < 50:
-                return rest
+                return rest.strip()
     return None
 
 def get_doc_type(filename):
-    name = Path(filename).stem
     for doc in EXPECTED_DOCS:
-        if doc in name:
+        if doc in filename:
             return doc
     return "Прочее"
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
+def start(update, context):
+    update.message.reply_text(
         "📁 *Бот для документов*\n\n"
         "Отправь файл с именем:\n"
         "`Договор (ООО Ромашка).pdf`\n\n"
@@ -47,13 +47,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown"
     )
 
-async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    file = await update.message.document.get_file()
+def handle_document(update, context):
+    file = update.message.document.get_file()
     filename = update.message.document.file_name
     
     contractor = get_contractor_from_filename(filename)
     if not contractor:
-        await update.message.reply_text(
+        update.message.reply_text(
             "❌ Не определил контрагента.\n"
             "Используй формат: `Договор (ООО Ромашка).pdf`",
             parse_mode="Markdown"
@@ -61,33 +61,34 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     doc_type = get_doc_type(filename)
-    contractor_folder = Path(OUTPUT_FOLDER) / contractor
-    contractor_folder.mkdir(parents=True, exist_ok=True)
+    contractor_folder = os.path.join(OUTPUT_FOLDER, contractor)
+    if not os.path.exists(contractor_folder):
+        os.makedirs(contractor_folder)
     
-    dest = contractor_folder / filename
-    await file.download_to_drive(dest)
+    dest = os.path.join(contractor_folder, filename)
+    file.download(dest)
     
-    await update.message.reply_text(
+    update.message.reply_text(
         f"✅ *{filename}*\n📁 Контрагент: *{contractor}*\n📑 Тип: *{doc_type}*",
         parse_mode="Markdown"
     )
 
-async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def check_command(update, context):
     if not context.args:
-        await update.message.reply_text("Укажи контрагента: `/check ООО Ромашка`", parse_mode="Markdown")
+        update.message.reply_text("Укажи контрагента: `/check ООО Ромашка`", parse_mode="Markdown")
         return
     
     contractor = " ".join(context.args)
-    contractor_folder = Path(OUTPUT_FOLDER) / contractor
+    contractor_folder = os.path.join(OUTPUT_FOLDER, contractor)
     
-    if not contractor_folder.exists():
-        await update.message.reply_text(f"❌ Нет документов по *{contractor}*", parse_mode="Markdown")
+    if not os.path.exists(contractor_folder):
+        update.message.reply_text(f"❌ Нет документов по *{contractor}*", parse_mode="Markdown")
         return
     
-    files = list(contractor_folder.iterdir())
+    files = os.listdir(contractor_folder)
     existing_docs = set()
     for f in files:
-        dt = get_doc_type(f.name)
+        dt = get_doc_type(f)
         if dt != "Прочее":
             existing_docs.add(dt)
     
@@ -104,54 +105,33 @@ async def check_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         response += "🎉 *Полный комплект!*"
     
-    await update.message.reply_text(response, parse_mode="Markdown")
+    update.message.reply_text(response, parse_mode="Markdown")
 
-async def list_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    contractors = [d.name for d in Path(OUTPUT_FOLDER).iterdir() if d.is_dir()]
+def list_command(update, context):
+    if not os.path.exists(OUTPUT_FOLDER):
+        update.message.reply_text("📭 Нет контрагентов")
+        return
+    
+    contractors = [d for d in os.listdir(OUTPUT_FOLDER) if os.path.isdir(os.path.join(OUTPUT_FOLDER, d))]
     if not contractors:
-        await update.message.reply_text("📭 Нет контрагентов")
+        update.message.reply_text("📭 Нет контрагентов")
     else:
         text = "📋 *Контрагенты:*\n" + "\n".join(f"• {c}" for c in contractors)
-        await update.message.reply_text(text, parse_mode="Markdown")
-
-async def get_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Укажи контрагента: `/get ООО Ромашка`", parse_mode="Markdown")
-        return
-    
-    contractor = " ".join(context.args)
-    contractor_folder = Path(OUTPUT_FOLDER) / contractor
-    
-    if not contractor_folder.exists() or not list(contractor_folder.iterdir()):
-        await update.message.reply_text(f"❌ Нет документов по *{contractor}*", parse_mode="Markdown")
-        return
-    
-    zip_path = Path(f"/tmp/{contractor}_{int(datetime.now().timestamp())}.zip")
-    with zipfile.ZipFile(zip_path, 'w') as zipf:
-        for file in contractor_folder.iterdir():
-            zipf.write(file, file.name)
-    
-    with open(zip_path, 'rb') as f:
-        await update.message.reply_document(
-            document=f,
-            filename=f"{contractor}.zip",
-            caption=f"📦 Архив документов *{contractor}*",
-            parse_mode="Markdown"
-        )
-    
-    zip_path.unlink()
+        update.message.reply_text(text, parse_mode="Markdown")
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("check", check_command))
-    app.add_handler(CommandHandler("list", list_command))
-    app.add_handler(CommandHandler("get", get_command))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    updater = Updater(TELEGRAM_TOKEN)
+    dp = updater.dispatcher
+    
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("check", check_command))
+    dp.add_handler(CommandHandler("list", list_command))
+    dp.add_handler(MessageHandler(Filters.document, handle_document))
     
     print("🤖 Бот запущен!")
     print(f"📁 Документы будут сохранены в: {OUTPUT_FOLDER}")
-    app.run_polling()
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
